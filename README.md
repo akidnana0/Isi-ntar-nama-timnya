@@ -208,9 +208,9 @@ STATUS=0000000a after 6407 core cycles, max cores busy simultaneously=4, 4KB-cro
 
 **Keterangan:** `STATUS=0000000a` = bit DONE dan IDLE menyala (selesai normal). `STATUS=00000005` = BUSY dan ERROR.
 
-![Input interface](src/pic/FSM tingkat sistem interaksi hps dan hardware.png)
-![Input interface](src/pic/FSM AXI3 DMA Reader.png)
-![Input interface](src/pic/FSM Block Splitter & Padding.png)
-![Input interface](src/pic/FSM Work Dispatcher (Load Balancer).png)
-![Input interface](src/pic/FSM SHA-512 Core.png)
-![Input interface](src/pic/FSM Result Aggregator & DMA Writer.png)
+![Input interface](src/pic/FSM_tingkat_sistem_interaksi_hps_dan_hardware.png)
+![Input interface](src/pic/FSM_AXI3_DMA_Reader.png)
+![Input interface](src/pic/FSM_Block_Splitter-_Padding.png)
+![Input interface](src/pic/FSM_Work_Dispatcher_(Load_Balancer).png)
+![Input interface](src/pic/FSM_SHA-512_Core.png)
+![Input interface](src/pic/FSM_Result_Aggregator_&_DMA_Writer.png)
