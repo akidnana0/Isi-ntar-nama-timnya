@@ -88,3 +88,116 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 | **User Space Library** | *Library* bersama (`.so`) yang menyembunyikan kerumitan pemisahan (*parsing*) PDF, ekstraksi X.509, dan interaksi driver. Membuka PDF, mencari `/ByteRange` dan `/Contents`, memilah PKCS#7 untuk mengekstrak X.509 dan *hash* yang diharapkan. Membuka `/dev/sha512`, mengalokasikan pekerjaan, mengirim data via `write()` atau `mmap()`, membaca hasil komputasi *hash* via `read()`, dan membandingkannya. |
 | **Kernel Driver** | Driver perangkat karakter (`/dev/sha512`) yang mengelola register FPGA, DMA, dan interupsi. Meliputi:<br>- `probe()`: ioremap, alokasi DMA, permintaan IRQ.<br>- `open()` / `release()`: Manajemen sesi.<br>- `ioctl()`: Mengatur *core*, mengirimkan pekerjaan, melakukan *reset*.<br>- `write()`: Memprogram DMA PL330, menulis register, memicu dimulainya proses.<br>- `read()`: Menunggu di antrean, membatalkan (*invalidate*) *cache* CPU, menyalin hasil ke *user space*.<br>- `Interrupt Handler`: Menghapus IRQ, membaca hasil, membangunkan proses yang menunggu. |
 | **DMA Engine Integration** | Subsistem `dmaengine` pada kernel Linux. API abstrak untuk DMA PL330. Menggunakan `dma_request_channel()`, `dmaengine_prep_dma_memcpy()`, dan `dmaengine_submit()` untuk menangani transfer memori secara efisien melalui *callback*. |
+
+
+# Hasil Simulasi RTL — SHA-512 Multi-Core Accelerator
+
+Seluruh digest dibandingkan dengan model referensi Python `hashlib.sha512`.
+
+| Item | Nilai |
+|---|---|
+| Simulator | Icarus Verilog (`iverilog -g2005`) |
+| Clock | `core_clk` 50 MHz, `h2f_axi_clk` 100 MHz |
+| Model memori | DDR3  |
+| Cara menjalankan | `cd sim && ./run_sim.sh` |
+
+## Ringkasan
+
+✅ **Semua 13 skenario lulus — 0 mismatch digest.**
+
+| Skenario | Konfigurasi | Hasil |
+|---|---|---|
+| Kasus tepi panjang pesan (20 dokumen: 0, 1, 7, 8, 111–129 B, lintas batas 4 KB, …) | N = 1, 4, 12 | ✅ 20/20 |
+| Dokumen besar (12 × 4 KB) | N = 1, 4, 12 | ✅ 12/12 |
+| Dokumen kecil (48 × 64 B) | N = 1, 4, 12 | ✅ 48/48 |
+| Backpressure acak pada jalur baca/tulis | N = 6 | ✅ 20/20 |
+| SLVERR di tengah burst → RESET → proses ulang | N = 4 | ✅ ERROR terdeteksi, lalu 20/20 |
+| RESET di tengah proses (siklus ke-777) | N = 5 | ✅ kembali IDLE dalam 44 siklus, lalu 20/20 |
+| Push mode (AXI3 slave, Job ID = nomor urut) | N = 4 | ✅ 20/20 |
+
+## Kinerja
+
+### Dokumen besar (12 × 4 KB = 49.152 B)
+
+| N core | Siklus | Waktu @ 50 MHz | Throughput | Speedup vs N = 1 | Core aktif maks. |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 32.555 | 651 µs | ≈ 75 MB/s | 1,0× | 1 |
+| 4 | 8.995 | 180 µs | ≈ 273 MB/s | 3,6× | 4 |
+| 12 | 8.475 | 170 µs | ≈ 290 MB/s | 3,8× | 5 |
+
+### Dokumen kecil (48 × 64 B)
+
+| N core | Siklus | Waktu @ 50 MHz | Dokumen/detik | Speedup vs N = 1 | Core aktif maks. |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 4.130 | 82,6 µs | ≈ 0,58 juta | 1,0× | 1 |
+| 4 | 1.140 | 22,8 µs | ≈ 2,1 juta | 3,6× | 4 |
+| 12 | 1.080 | 21,6 µs | ≈ 2,2 juta | 3,8× | 5 |
+
+### Kasus tepi (20 dokumen campuran)
+
+| N core | Siklus | Speedup vs N = 1 |
+|---:|---:|---:|
+| 1 | 7.650 | 1,0× |
+| 4 | 4.195 | 1,8× |
+| 12 | 4.210 | 1,8× |
+
+## Analisis
+
+- **Satu core:** 128 B per ~82 siklus ≈ 78 MB/s pada 50 MHz. Hasil N = 1 (≈ 75 MB/s).
+- **Saturasi di ~5 core.** Jalur baca 64 bit @ 50 MHz butuh ~18 siklus per blok 128 B, sedangkan core butuh ~82 siklus, sehingga hanya ~82 / 18 ≈ 4,6 core yang dapat disuplai penuh. Karena itu N = 12 hampir tidak lebih cepat dari N = 4.
+- **Kasus tepi** berisi banyak dokumen sangat kecil, sehingga waktu baca descriptor lebih dominan dan speedup lebih rendah.
+- **Peningkatan berikutnya:** bridge FPGA-to-HPS 128 bit, clock DMA lebih tinggi, dan beberapa read outstanding.
+
+## Log lengkap
+
+<details>
+<summary>Tampilan keluaran <code>run_sim.sh</code></summary>
+
+```text
+== pull mode, edge docs, N=1
+STATUS=0000000a after 7650 core cycles, max cores busy simultaneously=1, 4KB-crossing bursts=0
+20/20 correct
+== pull mode, edge docs, N=4
+STATUS=0000000a after 4195 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+20/20 correct
+== pull mode, edge docs, N=12
+STATUS=0000000a after 4210 core cycles, max cores busy simultaneously=5, 4KB-crossing bursts=0
+20/20 correct
+== pull mode, big docs, N=1
+STATUS=0000000a after 32555 core cycles, max cores busy simultaneously=1, 4KB-crossing bursts=0
+12/12 correct
+== pull mode, big docs, N=4
+STATUS=0000000a after 8995 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+12/12 correct
+== pull mode, big docs, N=12
+STATUS=0000000a after 8475 core cycles, max cores busy simultaneously=5, 4KB-crossing bursts=0
+12/12 correct
+== pull mode, small docs, N=1
+STATUS=0000000a after 4130 core cycles, max cores busy simultaneously=1, 4KB-crossing bursts=0
+48/48 correct
+== pull mode, small docs, N=4
+STATUS=0000000a after 1140 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+48/48 correct
+== pull mode, small docs, N=12
+STATUS=0000000a after 1080 core cycles, max cores busy simultaneously=5, 4KB-crossing bursts=0
+48/48 correct
+== random backpressure
+STATUS=0000000a after 4395 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+20/20 correct
+== SLVERR mid-burst -> RESET -> rerun
+ERROR RUN: STATUS=00000005 (expect ERROR bit2), dma state=0, rd_active=0
+STATUS=0000000a after 4325 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+20/20 correct
+== RESET in the middle of a run
+MID-RUN RESET at 777 cycles: dma_st=7 out_st=0 in_flight_rd=1 tb_wr_slave=0
+  back to IDLE after 44 cycles, tb_wr_slave=0 rd_active=0 (both must be 0)
+STATUS=0000000a after 4340 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+20/20 correct
+== push mode (AXI3 slave, job ID = sequence number)
+STATUS=0000000a after 6407 core cycles, max cores busy simultaneously=4, 4KB-crossing bursts=0
+20/20 correct
+```
+
+</details>
+
+**Keterangan:** `STATUS=0000000a` = bit DONE dan IDLE menyala (selesai normal). `STATUS=00000005` = BUSY dan ERROR.
