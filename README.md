@@ -3,7 +3,7 @@
 ## 1. Bagian Interface
 
 ### a. Input Interface
-![Input interface](Input_Interface.png)
+![Input interface](src/pic/Input_Interface.png)
 Aliran Data: `HPS Side (AXI3 Master, 64 bit) -> h2f bridge -> FPGA Side (AXI3 Slave, 64 bit) -> Input FIFO -> Core Side (AXI4 Stream-Master, 64 bit)`
 
 | Nama Block | Size | Deskripsi |
