@@ -3,10 +3,15 @@
 ## 1. Bagian Interface
 
 ![Input interface](src/pic/FSM_tingkat_sistem_interaksi_hps_dan_hardware.png)
+Gambar 1.1 Interaksi HPS dan Hardware
+
 ![Input interface](src/pic/FSM_AXI3_DMA_Reader.png)
+Gambar 1.2 AXI3 dan DMA Reader
 
 ### a. Input Interface
 ![Input interface](src/pic/Input_Interface.png)
+Gambar 1.3 Input Interface Block
+
 Aliran Data: `HPS Side (AXI3 Master, 64 bit) -> h2f bridge -> FPGA Side (AXI3 Slave, 64 bit) -> Input FIFO -> Core Side (AXI4 Stream-Master, 64 bit)`
 
 | Nama Block | Size | Deskripsi |
@@ -24,6 +29,8 @@ Aliran Data: `HPS Side (AXI3 Master, 64 bit) -> h2f bridge -> FPGA Side (AXI3 Sl
 
 ### b. Output Interface
 ![Input interface](src/pic/Output_Interface.png)
+Gambar 1.4 Output Interface Block
+
 Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side (AXI3 Master, 64 bit) -> f2h bridge -> HPS Side (AXI3 Slave, 64 bit)`
 
 | Nama Block | Size | Deskripsi |
@@ -44,7 +51,10 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ## 2. Bagian FSM (Finite State Machine) & Register
 
 ![Input interface](src/pic/Control_FSM.png)
+Gambar 2.1 Control FSM Block
+
 ![Input interface](src/pic/FSM_Block_Splitter_Padding.png)
+Gambar 2.2 Block Splitter Padding
 
 
 ### Register Control Bank
@@ -81,9 +91,16 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ## 3. Bagian SHA-512
 
 ![Input interface](src/pic/SHA_512.png)
+Gambar 3.1 SHA 512 Block
+
 ![Input interface](src/pic/FSM_Work_Dispatcher_(Load_Balancer).png)
-![Input interface](src/pic/FSM_SHA-512_Core.png)
+Gambar 3.2 Work Dispatcher
+
+![Input interface](src/pic/FSM_SHA_512_Core.png)
+Gambar 3.3 SHA 512 Core
+
 ![Input interface](src/pic/FSM_Result_Aggregator_DMA_Writer.png)
+Gambar 3.4 Result Aggregator
 
 | Blok | Deskripsi |
 | :--- | :--- |
