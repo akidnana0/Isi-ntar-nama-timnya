@@ -20,6 +20,7 @@ Aliran Data: `HPS Side (AXI3 Master, 64 bit) -> h2f bridge -> FPGA Side (AXI3 Sl
 | **core_clk** | 1 bit | Ini adalah domain *clock* untuk *Implementation Plane* SHA-512. *Clock* ini menggerakkan sisi pembacaan dari FIFO *dual-clock* milik Input FIFO dan logika *Block Splitter*. |
 
 ### b. Output Interface
+![Input interface](src/pic/Output_Interface.png)
 Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side (AXI3 Master, 64 bit) -> f2h bridge -> HPS Side (AXI3 Slave, 64 bit)`
 
 | Nama Block | Size | Deskripsi |
@@ -38,6 +39,8 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ---
 
 ## 2. Bagian FSM (Finite State Machine) & Register
+
+![Input interface](src/pic/Control_FSM.png)
 
 ### Register Control Bank
 
@@ -71,6 +74,8 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ---
 
 ## 3. Bagian SHA-512
+
+![Input interface](src/pic/SHA_512.png)
 
 | Blok | Deskripsi |
 | :--- | :--- |
@@ -202,3 +207,10 @@ STATUS=0000000a after 6407 core cycles, max cores busy simultaneously=4, 4KB-cro
 </details>
 
 **Keterangan:** `STATUS=0000000a` = bit DONE dan IDLE menyala (selesai normal). `STATUS=00000005` = BUSY dan ERROR.
+
+![Input interface](src/pic/FSM tingkat sistem interaksi hps dan hardware.png)
+![Input interface](src/pic/FSM AXI3 DMA Reader.png)
+![Input interface](src/pic/FSM Block Splitter & Padding.png)
+![Input interface](src/pic/FSM Work Dispatcher (Load Balancer).png)
+![Input interface](src/pic/FSM SHA-512 Core.png)
+![Input interface](src/pic/FSM Result Aggregator & DMA Writer.png)
