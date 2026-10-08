@@ -2,6 +2,9 @@
 
 ## 1. Bagian Interface
 
+![Input interface](src/pic/FSM_tingkat_sistem_interaksi_hps_dan_hardware.png)
+![Input interface](src/pic/FSM_AXI3_DMA_Reader.png)
+
 ### a. Input Interface
 ![Input interface](src/pic/Input_Interface.png)
 Aliran Data: `HPS Side (AXI3 Master, 64 bit) -> h2f bridge -> FPGA Side (AXI3 Slave, 64 bit) -> Input FIFO -> Core Side (AXI4 Stream-Master, 64 bit)`
@@ -41,6 +44,8 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ## 2. Bagian FSM (Finite State Machine) & Register
 
 ![Input interface](src/pic/Control_FSM.png)
+![Input interface](src/pic/FSM_Block_Splitter_Padding.png)
+
 
 ### Register Control Bank
 
@@ -76,6 +81,9 @@ Aliran Data: `Core Side (AXI4 Stream-Slave, 512 bit) -> Output FIFO -> FPGA Side
 ## 3. Bagian SHA-512
 
 ![Input interface](src/pic/SHA_512.png)
+![Input interface](src/pic/FSM_Work_Dispatcher_(Load_Balancer).png)
+![Input interface](src/pic/FSM_SHA-512_Core.png)
+![Input interface](src/pic/FSM_Result_Aggregator_DMA_Writer.png)
 
 | Blok | Deskripsi |
 | :--- | :--- |
@@ -208,9 +216,4 @@ STATUS=0000000a after 6407 core cycles, max cores busy simultaneously=4, 4KB-cro
 
 **Keterangan:** `STATUS=0000000a` = bit DONE dan IDLE menyala (selesai normal). `STATUS=00000005` = BUSY dan ERROR.
 
-![Input interface](src/pic/FSM_tingkat_sistem_interaksi_hps_dan_hardware.png)
-![Input interface](src/pic/FSM_AXI3_DMA_Reader.png)
-![Input interface](src/pic/FSM_Block_Splitter-_Padding.png)
-![Input interface](src/pic/FSM_Work_Dispatcher_(Load_Balancer).png)
-![Input interface](src/pic/FSM_SHA-512_Core.png)
-![Input interface](src/pic/FSM_Result_Aggregator_&_DMA_Writer.png)
+
