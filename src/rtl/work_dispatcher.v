@@ -4,15 +4,22 @@
 //   IDLE   : wait for a block from the Block Splitter (and run=1)
 //   ALLOC  : FIRST block of a document -> round-robin pick of a free, enabled core;
 //            record Job ID -> core in the tracking table
-//   LOOKUP : continuation block -> find the core that owns this Job ID
+//   LOOKUP : continuation block -> core currently owned by this stream context
 //   SEND   : present block to the selected core until it accepts (valid/ready)
 //
 // A core stays "assigned" until the Result Aggregator releases it
 // (core_release = result_ack), so one document never leaves its core.
 // Backpressure: blk_ready is low unless SEND with a ready core.
+//
+// v2: routing uses the stream context (blk_ctx) instead of a Job-ID search.
+// Job IDs are now only carried to the result; duplicate IDs no longer stall
+// allocation (v1 refused to start a document whose ID was still in flight,
+// which serialised push mode, where every document has the same AWID).
 // ============================================================================
 module work_dispatcher #(
-    parameter N = 12
+    parameter N    = 12,
+    parameter NCTX = 16,
+    parameter CW   = 4
 )(
     input  wire              clk,
     input  wire              rst_n,
@@ -24,6 +31,7 @@ module work_dispatcher #(
     output wire              blk_ready,
     input  wire              blk_first,
     input  wire              blk_last,
+    input  wire [CW-1:0]     blk_ctx,
 
     input  wire [N-1:0]      core_en,
     input  wire [N-1:0]      core_blk_ready,
@@ -40,7 +48,7 @@ module work_dispatcher #(
 
     reg [1:0]       st;
     reg [N-1:0]     assigned;
-    reg [15:0]      id_tab [0:N-1];
+    reg [4:0]       ctx_core [0:NCTX-1];   // context -> core holding its document
     reg [4:0]       sel, rr;
 
     // ---- round-robin free-core search --------------------------------------
@@ -58,41 +66,29 @@ module work_dispatcher #(
         end
     end
 
-    // ---- Job ID lookup ------------------------------------------------------
-    reg         l_found;
-    reg [4:0]   l_idx;
-    integer     j;
-    always @* begin
-        l_found = 1'b0; l_idx = 5'd0;
-        for (j = 0; j < N; j = j + 1)
-            if (!l_found && assigned[j] && id_tab[j] == blk_user) begin
-                l_found = 1'b1; l_idx = j[4:0];
-            end
-    end
-
     wire send_fire = (st == D_SEND) & blk_valid & core_blk_ready[sel];
 
     integer r;
     always @(posedge clk or negedge rst_n)
         if (!rst_n) begin
             st <= D_IDLE; assigned <= {N{1'b0}}; sel <= 0; rr <= 0;
-            for (r = 0; r < N; r = r + 1) id_tab[r] <= 16'd0;
+            for (r = 0; r < NCTX; r = r + 1) ctx_core[r] <= 5'd0;
         end else begin
             assigned <= assigned & ~core_release;      // release (different core than set below)
 
             case (st)
             D_IDLE: if (en && blk_valid) st <= blk_first ? D_ALLOC : D_LOOKUP;
 
-            D_ALLOC: if (a_found && !l_found) begin
+            D_ALLOC: if (a_found) begin
                 sel               <= a_idx;
                 assigned[a_idx]   <= 1'b1;
-                id_tab[a_idx]     <= blk_user;
+                ctx_core[blk_ctx] <= a_idx;
                 rr                <= (a_idx + 5'd1 >= N) ? 5'd0 : a_idx + 5'd1;
                 st                <= D_SEND;
             end
 
-            D_LOOKUP: if (l_found) begin
-                sel <= l_idx;
+            D_LOOKUP: begin
+                sel <= ctx_core[blk_ctx];
                 st  <= D_SEND;
             end
 

@@ -1,10 +1,13 @@
 // ============================================================================
 // core_manager.v : Core Manager
-//   * Clock gating / power saving: disabled cores get core_clk_en = 0 and are
-//     held in reset (core_rst_n = 0). Implemented as clock-ENABLE (not a gated
-//     clock) so it maps cleanly onto Cyclone V registers with CE.
-//   * Job launch: `run` goes high on `launch` (issued by system FSM after it
-//     has qualified CTRL[START]); the dispatcher only dispatches while run=1.
+//   * CORE_EN is SNAPSHOTTED at launch (en_run). Changing CORE_EN while a run
+//     is active has no effect until the next START (v1 used the live register:
+//     disabling a core mid-run reset it while it still owned a document).
+//   * Power saving: disabled cores get core_clk_en = 0 (clock ENABLE, maps onto
+//     Cyclone V register CE). No combinational reset gating any more (v1 fed
+//     core_en & rst_n straight into the cores' asynchronous reset).
+//   * Job launch: `run` goes high on `launch`; the dispatcher only dispatches
+//     while run=1.
 //   * Completion tracking: all_done = run && no enabled core holds a job.
 // ============================================================================
 module core_manager #(
@@ -12,21 +15,22 @@ module core_manager #(
 )(
     input  wire         clk,
     input  wire         rst_n,
-    input  wire [N-1:0] core_en,
+    input  wire [N-1:0] core_en,          // live CORE_EN (from register bank)
     input  wire         launch,
     input  wire         stop,
-    input  wire [N-1:0] core_assigned,   // from dispatcher (job in flight / result pending)
+    input  wire [N-1:0] core_assigned,    // from dispatcher (job in flight / result pending)
     output wire [N-1:0] core_clk_en,
-    output wire [N-1:0] core_rst_n,
+    output wire [N-1:0] core_en_run,      // snapshot used by the datapath
     output reg          run,
     output wire         all_done
 );
+    reg [N-1:0] en_run;
     always @(posedge clk or negedge rst_n)
-        if (!rst_n)      run <= 1'b0;
-        else if (launch) run <= 1'b1;
+        if (!rst_n) begin run <= 1'b0; en_run <= {N{1'b0}}; end
+        else if (launch) begin run <= 1'b1; en_run <= core_en; end
         else if (stop)   run <= 1'b0;
 
-    assign core_clk_en = core_en;
-    assign core_rst_n  = core_en & {N{rst_n}};
-    assign all_done    = run & ~(|(core_assigned & core_en));
+    assign core_clk_en = en_run;
+    assign core_en_run = en_run;
+    assign all_done    = run & ~(|(core_assigned & en_run));
 endmodule

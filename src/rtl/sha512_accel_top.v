@@ -12,7 +12,7 @@
 //  (lwh2f / f2h-read bridge clocks must be tied to the same fabric clock).
 // ============================================================================
 module sha512_accel_top #(
-    parameter N          = 12,
+    parameter N          = 12,             // <= 16 (CORE_EN is 16 bit)
     parameter ID_W       = 12,
     parameter WD_TIMEOUT = 32'd400_000_000
 )(
@@ -96,19 +96,43 @@ module sha512_accel_top #(
     output wire              fpga_irq
 );
     // ------------------------------------------------------------------------
-    // Resets: RESET / FLUSH bits reset the whole datapath incl. both FIFOs in
-    // both clock domains (stretched, async assert, sync release).
+    // Resets: RESET / FLUSH reset the whole datapath incl. both FIFOs in both
+    // clock domains (stretched, async assert, sync release).
+    // v2: QUIESCE FIRST. v1 reset the AXI masters/slave in the middle of a
+    // burst; the HPS bridge then waits forever for the missing R/W beats and
+    // the f2h/h2f bridge hangs until the HPS is rebooted. Now the request
+    // (rst_req) halts all AXI FSMs, waits until they are idle (timeout 4096
+    // cycles as a last resort), and only then pulses the datapath reset.
     // ------------------------------------------------------------------------
     wire        soft_reset, fifo_flush;
+    wire        dma_idle, out_idle_a, in_idle_a;
     reg  [3:0]  clr_cnt;
-    reg         clr_active;
+    reg         clr_active, rst_req;
+    reg  [11:0] q_cnt;
+    reg  [1:0]  out_idle_s, in_idle_s;
     always @(posedge core_clk or negedge core_rst_n)
-        if (!core_rst_n) begin clr_cnt <= 4'd0; clr_active <= 1'b0; end
+        if (!core_rst_n) begin out_idle_s <= 2'b11; in_idle_s <= 2'b11; end
+        else begin out_idle_s <= {out_idle_s[0], out_idle_a}; in_idle_s <= {in_idle_s[0], in_idle_a}; end
+
+    wire q_done = rst_req & (((q_cnt >= 12'd8) & dma_idle & out_idle_s[1] & in_idle_s[1]) | (&q_cnt));
+
+    always @(posedge core_clk or negedge core_rst_n)
+        if (!core_rst_n) begin clr_cnt <= 4'd0; clr_active <= 1'b0; rst_req <= 1'b0; q_cnt <= 12'd0; end
         else begin
-            if (soft_reset | fifo_flush) clr_cnt <= 4'd15;
-            else if (clr_cnt != 4'd0)    clr_cnt <= clr_cnt - 4'd1;
+            if (soft_reset | fifo_flush) begin rst_req <= 1'b1; q_cnt <= 12'd0; end
+            else if (rst_req) begin q_cnt <= q_cnt + 12'd1; if (q_done) rst_req <= 1'b0; end
+
+            if (q_done)                clr_cnt <= 4'd15;
+            else if (clr_cnt != 4'd0)  clr_cnt <= clr_cnt - 4'd1;
             clr_active <= (clr_cnt != 4'd0);
         end
+    wire rst_busy = rst_req | clr_active | (clr_cnt != 4'd0);
+
+    // halt request into the h2f_axi_clk domain (level, 2-FF synchronizer)
+    reg [1:0] halt_s;
+    always @(posedge h2f_axi_clk or negedge h2f_axi_rst_n)
+        if (!h2f_axi_rst_n) halt_s <= 2'b00; else halt_s <= {halt_s[0], rst_req};
+    wire halt_a = halt_s[1];
 
     wire dp_arst_n  = core_rst_n & h2f_axi_rst_n & ~clr_active;
     wire core_dp_rst_n, axi_dp_rst_n;
@@ -137,7 +161,10 @@ module sha512_accel_top #(
     );
 
     wire              ctrl_start, start_ack, irq_global_en;
-    wire [N-1:0]      core_en_eff, core_busy, core_assigned, core_done, core_rel;
+    wire [N-1:0]      core_en_eff, core_en_run, core_busy, core_assigned, core_done, core_rel;
+    localparam        NCTX = 16, CW = 4;
+    function [CW:0] popcnt(input [N-1:0] v); integer b; begin
+        popcnt = 0; for (b = 0; b < N; b = b + 1) popcnt = popcnt + v[b]; end endfunction
     wire [2:0]        irq_en, irq_w1c, irq_status, err_set;
     wire [31:0]       job_base, job_count, res_base, res_slots;
     wire              job_dec, st_busy, st_idle, sys_busy, sys_done, sys_error, err_any;
@@ -157,15 +184,15 @@ module sha512_accel_top #(
         .err_set(err_set), .err_any(err_any)
     );
 
-    assign st_busy = |(core_busy & core_en_eff);
-    assign st_idle = ~sys_busy & ~(|core_busy);
+    assign st_busy = |(core_busy & core_en_run);
+    assign st_idle = ~sys_busy & ~(|core_busy) & ~rst_busy;
 
     wire launch, stop, dma_start, pull_mode, cfg_err, wd_timeout;
     wire all_done, dma_err, result_written, wr_err_core;
 
     system_fsm #(.TIMEOUT(WD_TIMEOUT)) u_sys (
         .clk(core_clk), .rst_n(core_rst_n), .soft_reset(soft_reset),
-        .ctrl_start(ctrl_start), .start_ack(start_ack),
+        .ctrl_start(ctrl_start & ~rst_busy), .start_ack(start_ack),
         .job_count(job_count), .job_base(job_base), .en_any(|core_en_eff),
         .all_done(all_done), .result_written(result_written), .dma_err(dma_err),
         .launch(launch), .stop(stop), .dma_start(dma_start), .pull_mode(pull_mode),
@@ -185,12 +212,12 @@ module sha512_accel_top #(
         .irq_status(irq_status), .fpga_irq(fpga_irq)
     );
 
-    wire [N-1:0] core_clk_en, core_rst_n_v;
+    wire [N-1:0] core_clk_en;
     wire         run;
     core_manager #(.N(N)) u_cm (
         .clk(core_clk), .rst_n(core_dp_rst_n), .core_en(core_en_eff),
         .launch(launch), .stop(stop), .core_assigned(core_assigned),
-        .core_clk_en(core_clk_en), .core_rst_n(core_rst_n_v),
+        .core_clk_en(core_clk_en), .core_en_run(core_en_run),
         .run(run), .all_done(all_done)
     );
 
@@ -199,6 +226,9 @@ module sha512_accel_top #(
     // ------------------------------------------------------------------------
     wire [63:0] in_tdata;  wire in_tvalid, in_tready, in_tlast;  wire [7:0] in_tkeep;  wire [15:0] in_tuser;
     wire [63:0] dr_tdata;  wire dr_tvalid, dr_tready, dr_tlast;  wire [7:0] dr_tkeep;  wire [15:0] dr_tuser;
+    wire [CW-1:0] dr_tctx;
+    wire          dma_busy;
+    assign        dma_idle = ~dma_busy;
 
     axi3_input_if #(.ID_W(ID_W)) u_in (
         .h2f_axi_clk(h2f_axi_clk), .h2f_axi_rst_n(axi_dp_rst_n),
@@ -209,13 +239,16 @@ module sha512_accel_top #(
         .s_axi_wid(s_axi_wid), .s_axi_wdata(s_axi_wdata), .s_axi_wstrb(s_axi_wstrb),
         .s_axi_wlast(s_axi_wlast), .s_axi_wvalid(s_axi_wvalid), .s_axi_wready(s_axi_wready),
         .s_axi_bid(s_axi_bid), .s_axi_bresp(s_axi_bresp), .s_axi_bvalid(s_axi_bvalid), .s_axi_bready(s_axi_bready),
+        .halt(halt_a), .idle(in_idle_a),
         .m_axis_tdata(in_tdata), .m_axis_tvalid(in_tvalid), .m_axis_tready(in_tready),
         .m_axis_tlast(in_tlast), .m_axis_tkeep(in_tkeep), .m_axis_tuser(in_tuser)
     );
 
-    axi3_dma_reader u_dma (
+    axi3_dma_reader #(.NCTX(NCTX), .CW(CW)) u_dma (
         .clk(core_clk), .rst_n(core_dp_rst_n),
         .start(dma_start), .job_base(job_base), .job_count(job_count),
+        .max_ctx(popcnt(core_en_eff)),        // #open documents <= #cores (deadlock-free)
+        .halt(rst_req),
         .m_axi_arid(m_rd_arid), .m_axi_araddr(m_rd_araddr), .m_axi_arlen(m_rd_arlen),
         .m_axi_arsize(m_rd_arsize), .m_axi_arburst(m_rd_arburst),
         .m_axi_arvalid(m_rd_arvalid), .m_axi_arready(m_rd_arready),
@@ -223,7 +256,8 @@ module sha512_accel_top #(
         .m_axi_rlast(m_rd_rlast), .m_axi_rvalid(m_rd_rvalid), .m_axi_rready(m_rd_rready),
         .m_axis_tdata(dr_tdata), .m_axis_tvalid(dr_tvalid), .m_axis_tready(dr_tready),
         .m_axis_tlast(dr_tlast), .m_axis_tkeep(dr_tkeep), .m_axis_tuser(dr_tuser),
-        .busy(), .err_pulse(dma_err)
+        .m_axis_tctx(dr_tctx),
+        .busy(dma_busy), .err_pulse(dma_err)
     );
 
     // source mux, gated by run (documents wait in the FIFO until START)
@@ -232,6 +266,7 @@ module sha512_accel_top #(
     wire        bs_tlast  = pull_mode ? dr_tlast : in_tlast;
     wire [7:0]  bs_tkeep  = pull_mode ? dr_tkeep : in_tkeep;
     wire [15:0] bs_tuser  = pull_mode ? dr_tuser : in_tuser;
+    wire [CW-1:0] bs_tctx = pull_mode ? dr_tctx  : {CW{1'b0}};   // push mode = one sequential stream
     wire        bs_tready;
     assign dr_tready = run &  pull_mode & bs_tready;
     assign in_tready = run & ~pull_mode & bs_tready;
@@ -240,23 +275,24 @@ module sha512_accel_top #(
     // SHA-512 plane
     // ------------------------------------------------------------------------
     wire [1023:0] sp_data;  wire [15:0] sp_user;  wire sp_valid, sp_ready, sp_first, sp_last;
+    wire [CW-1:0] sp_ctx;
 
-    block_splitter u_bs (
+    block_splitter #(.NCTX(NCTX), .CW(CW)) u_bs (
         .clk(core_clk), .rst_n(core_dp_rst_n),
         .s_tdata(bs_tdata), .s_tvalid(bs_tvalid), .s_tready(bs_tready),
-        .s_tlast(bs_tlast), .s_tkeep(bs_tkeep), .s_tuser(bs_tuser),
+        .s_tlast(bs_tlast), .s_tkeep(bs_tkeep), .s_tuser(bs_tuser), .s_tctx(bs_tctx),
         .blk_data(sp_data), .blk_user(sp_user), .blk_valid(sp_valid), .blk_ready(sp_ready),
-        .blk_first(sp_first), .blk_last(sp_last), .idle()
+        .blk_first(sp_first), .blk_last(sp_last), .blk_ctx(sp_ctx), .idle()
     );
 
     wire [N-1:0]  c_blk_valid, c_blk_ready;
     wire [1023:0] c_data;  wire [15:0] c_user;  wire c_first, c_last;
 
-    work_dispatcher #(.N(N)) u_wd (
+    work_dispatcher #(.N(N), .NCTX(NCTX), .CW(CW)) u_wd (
         .clk(core_clk), .rst_n(core_dp_rst_n), .en(run),
         .blk_data(sp_data), .blk_user(sp_user), .blk_valid(sp_valid), .blk_ready(sp_ready),
-        .blk_first(sp_first), .blk_last(sp_last),
-        .core_en(core_en_eff), .core_blk_ready(c_blk_ready), .core_release(core_rel),
+        .blk_first(sp_first), .blk_last(sp_last), .blk_ctx(sp_ctx),
+        .core_en(core_en_run), .core_blk_ready(c_blk_ready), .core_release(core_rel),
         .core_blk_valid(c_blk_valid), .core_data(c_data), .core_user(c_user),
         .core_first(c_first), .core_last(c_last), .core_assigned(core_assigned)
     );
@@ -267,7 +303,7 @@ module sha512_accel_top #(
     genvar gc;
     generate for (gc = 0; gc < N; gc = gc + 1) begin : g_core
         sha512_core u_core (
-            .clk(core_clk), .rst_n(core_rst_n_v[gc] & core_dp_rst_n), .clk_en(core_clk_en[gc]),
+            .clk(core_clk), .rst_n(core_dp_rst_n), .clk_en(core_clk_en[gc]),
             .blk_valid(c_blk_valid[gc]), .blk_ready(c_blk_ready[gc]),
             .blk_data(c_data), .blk_user(c_user), .blk_first(c_first), .blk_last(c_last),
             .busy(core_busy[gc]), .done(core_done[gc]),
@@ -302,11 +338,15 @@ module sha512_accel_top #(
         .m_axi_wid(m_wr_wid), .m_axi_wdata(m_wr_wdata), .m_axi_wstrb(m_wr_wstrb),
         .m_axi_wlast(m_wr_wlast), .m_axi_wvalid(m_wr_wvalid), .m_axi_wready(m_wr_wready),
         .m_axi_bid(m_wr_bid), .m_axi_bresp(m_wr_bresp), .m_axi_bvalid(m_wr_bvalid), .m_axi_bready(m_wr_bready),
+        .halt(halt_a), .idle(out_idle_a),
         .wr_done_pulse(wr_done_axi), .wr_err_pulse(wr_err_axi)
     );
 
     pulse_sync u_ps_done (.src_clk(h2f_axi_clk), .src_rst_n(axi_dp_rst_n), .pulse_in(wr_done_axi),
-                          .dst_clk(core_clk),    .dst_rst_n(core_rst_n),    .pulse_out(result_written));
+                          .dst_clk(core_clk),    .dst_rst_n(core_dp_rst_n), .pulse_out(result_written));
     pulse_sync u_ps_err  (.src_clk(h2f_axi_clk), .src_rst_n(axi_dp_rst_n), .pulse_in(wr_err_axi),
-                          .dst_clk(core_clk),    .dst_rst_n(core_rst_n),    .pulse_out(wr_err_core));
+                          .dst_clk(core_clk),    .dst_rst_n(core_dp_rst_n), .pulse_out(wr_err_core));
+    // v2: both ends of the pulse synchronizers are now reset by the SAME datapath
+    // reset. v1 reset only the source toggle on RESET/FLUSH, which produced a
+    // phantom result_written (JOB_COUNT-1, IRQ_STATUS[0]=1) after every soft reset.
 endmodule

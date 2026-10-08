@@ -12,8 +12,17 @@
 //   PAD     : one word per cycle: pending 0x80 word, zeros, then 128-bit length
 //             in words 14/15. Spills into a 2nd block automatically.
 //   EMIT    : present block (valid/ready); first/last flags for the dispatcher.
+//
+// v2: blocks of different documents may arrive interleaved (one full block or
+// one document tail per turn, see axi3_dma_reader). The per-document state
+// (FIRST flag, running bit length) is therefore kept per context (s_tctx).
+// A context never switches in the middle of a block, so the 16-word block
+// buffer itself can stay shared.
 // ============================================================================
-module block_splitter (
+module block_splitter #(
+    parameter NCTX = 16,
+    parameter CW   = 4
+)(
     input  wire          clk,
     input  wire          rst_n,
 
@@ -23,6 +32,7 @@ module block_splitter (
     input  wire          s_tlast,
     input  wire [7:0]    s_tkeep,
     input  wire [15:0]   s_tuser,
+    input  wire [CW-1:0] s_tctx,
 
     output wire [1023:0] blk_data,
     output wire [15:0]   blk_user,
@@ -30,6 +40,7 @@ module block_splitter (
     input  wire          blk_ready,
     output wire          blk_first,
     output wire          blk_last,
+    output wire [CW-1:0] blk_ctx,
     output wire          idle
 );
     localparam S_COLLECT = 2'd0, S_PAD = 2'd1, S_EMIT = 2'd2;
@@ -37,9 +48,12 @@ module block_splitter (
     reg [1:0]   st;
     reg [63:0]  w [0:15];
     reg [4:0]   wc;
-    reg [127:0] bitlen;
     reg [15:0]  job;
-    reg         first_f, final_f, padding, one_pend;
+    reg         final_f, padding, one_pend;
+    reg [CW-1:0] ctx;
+    reg [63:0]  bitlen_t [0:NCTX-1];    // per-context message length in bits
+    reg [NCTX-1:0] first_t;             // per-context "next block is the first"
+    integer     c;
 
     // ---- input word conditioning -------------------------------------------
     wire [63:0] be = { s_tdata[7:0],   s_tdata[15:8],  s_tdata[23:16], s_tdata[31:24],
@@ -55,13 +69,16 @@ module block_splitter (
 
     always @(posedge clk or negedge rst_n)
         if (!rst_n) begin
-            st <= S_COLLECT; wc <= 0; bitlen <= 0; job <= 0;
-            first_f <= 1'b1; final_f <= 1'b0; padding <= 1'b0; one_pend <= 1'b0;
+            st <= S_COLLECT; wc <= 0; job <= 0; ctx <= 0;
+            final_f <= 1'b0; padding <= 1'b0; one_pend <= 1'b0;
+            first_t <= {NCTX{1'b1}};
+            for (c = 0; c < NCTX; c = c + 1) bitlen_t[c] <= 64'd0;
         end else begin
             case (st)
             S_COLLECT: if (acc) begin
                 job    <= s_tuser;
-                bitlen <= bitlen + {121'd0, n, 3'b000};
+                ctx    <= s_tctx;
+                bitlen_t[s_tctx] <= bitlen_t[s_tctx] + {57'd0, n, 3'b000};
                 if (!s_tlast) begin
                     w[wc[3:0]] <= be;
                     wc <= wc + 5'd1;
@@ -82,8 +99,8 @@ module block_splitter (
                     one_pend   <= 1'b0;
                     wc         <= wc + 5'd1;
                 end else if (wc == 5'd14) begin
-                    w[14]   <= bitlen[127:64];
-                    w[15]   <= bitlen[63:0];
+                    w[14]   <= 64'd0;                   // length < 2^64 bits
+                    w[15]   <= bitlen_t[ctx];
                     wc      <= 5'd16;
                     final_f <= 1'b1;
                 end else begin
@@ -94,9 +111,9 @@ module block_splitter (
 
             S_EMIT: if (blk_ready) begin
                 wc      <= 5'd0;
-                first_f <= 1'b0;
+                first_t[ctx] <= 1'b0;
                 if (final_f) begin
-                    final_f <= 1'b0; padding <= 1'b0; first_f <= 1'b1; bitlen <= 128'd0;
+                    final_f <= 1'b0; padding <= 1'b0; first_t[ctx] <= 1'b1; bitlen_t[ctx] <= 64'd0;
                     st <= S_COLLECT;
                 end else
                     st <= padding ? S_PAD : S_COLLECT;
@@ -112,7 +129,8 @@ module block_splitter (
 
     assign blk_valid = (st == S_EMIT);
     assign blk_user  = job;
-    assign blk_first = first_f;
+    assign blk_first = first_t[ctx];
     assign blk_last  = final_f;
+    assign blk_ctx   = ctx;
     assign idle      = (st == S_COLLECT) & (wc == 5'd0) & ~padding;
 endmodule

@@ -92,7 +92,7 @@ module ctrl_regs #(
             flush_p <= wr_ctrl & reg_wstrb[0] & reg_wdata[2];
 
             // START: set by write-1, cleared when system FSM acknowledges
-            if (start_ack)                                  start_r <= 1'b0;
+            if (start_ack | rst_p)                          start_r <= 1'b0;   // v2: RESET also clears a pending START
             else if (wr_ctrl & reg_wstrb[0] & reg_wdata[0]) start_r <= 1'b1;
 
             if (wr_ctrl & reg_wstrb[0]) begin

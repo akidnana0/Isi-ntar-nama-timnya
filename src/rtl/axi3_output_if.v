@@ -51,6 +51,10 @@ module axi3_output_if #(
     input  wire         m_axi_bvalid,
     output wire         m_axi_bready,
 
+    // quiesce handshake (h2f_axi_clk domain, synchronised in the top level)
+    input  wire         halt,            // do not start a new packet
+    output wire         idle,            // no AXI write transaction outstanding
+
     // status pulses (h2f_axi_clk domain)
     output wire         wr_done_pulse,   // packet written, BRESP OKAY
     output wire         wr_err_pulse     // BRESP != OKAY
@@ -80,7 +84,7 @@ module axi3_output_if #(
     reg [15:0]  job;
     reg [15:0]  slot;
 
-    always @* pop = (st == O_IDLE) & ~fifo_empty;
+    always @* pop = (st == O_IDLE) & ~fifo_empty & ~halt;
 
     wire [16:0] slot_inc  = {1'b0, slot} + 17'd1;
     wire        slot_wrap = (slot_inc >= {1'b0, res_slots[15:0]});
@@ -90,7 +94,7 @@ module axi3_output_if #(
             st <= O_IDLE; beat <= 4'd0; dig <= 512'd0; job <= 16'd0; slot <= 16'd0;
         end else begin
             case (st)
-            O_IDLE: if (~fifo_empty) begin
+            O_IDLE: if (~fifo_empty & ~halt) begin
                 dig  <= fifo_rdata[511:0];
                 job  <= fifo_rdata[527:512];
                 st   <= O_AW;
@@ -125,6 +129,7 @@ module axi3_output_if #(
     assign m_axi_wvalid  = (st == O_W);
     assign m_axi_bready  = (st == O_B);
 
+    assign idle          = (st == O_IDLE);
     assign wr_done_pulse = (st == O_B) & m_axi_bvalid & (m_axi_bresp == 2'b00);
     assign wr_err_pulse  = (st == O_B) & m_axi_bvalid & (m_axi_bresp != 2'b00);
 endmodule

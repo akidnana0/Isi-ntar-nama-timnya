@@ -10,6 +10,8 @@
 //   DRAIN  : JOB_COUNT == 0, tunggu semua core lepas job (all_done)
 //   DONE   : STATUS[DONE]=1 (sticky sampai START berikutnya) -> IDLE
 //   ERR    : cfg error / DMA error / watchdog timeout; keluar lewat CTRL[RESET]
+//   v2: CTRL[RESET] kembali ke IDLE dari state MANA PUN (v1 hanya dari ERR:
+//       RESET saat RUN membuat FSM tertahan di RUN sampai watchdog ~8 s)
 // ============================================================================
 module system_fsm #(
     parameter [31:0] TIMEOUT = 32'd400_000_000   // cycles tanpa progress
@@ -56,7 +58,8 @@ module system_fsm #(
             if (!in_run || result_written) wd <= 32'd0;
             else                           wd <= wd + 32'd1;
 
-            case (st)
+            if (soft_reset) begin st <= S_IDLE; done_r <= 1'b0; end
+            else case (st)
             S_IDLE:   if (ctrl_start) st <= S_CHECK;
             S_CHECK: begin
                 pull_r <= (job_base != 32'd0);
@@ -68,12 +71,12 @@ module system_fsm #(
             S_DRAIN:  if (dma_err | timeout_pulse) st <= S_ERR;
                       else if (all_done)           st <= S_DONE;
             S_DONE:   begin done_r <= 1'b1; st <= S_IDLE; end
-            S_ERR:    if (soft_reset) st <= S_IDLE;
+            S_ERR:    ;                                  // leave only via RESET
             default:  st <= S_IDLE;
             endcase
         end
 
-    assign start_ack     = (st == S_LAUNCH);
+    assign start_ack     = (st == S_CHECK);     // v2: ack also when CHECK fails (v1 left START=1 -> relaunch loop after RESET)
     assign launch        = (st == S_LAUNCH);
     assign dma_start     = (st == S_LAUNCH) & pull_r;
     assign stop          = (st == S_DONE);
